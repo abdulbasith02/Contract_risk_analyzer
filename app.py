@@ -4,6 +4,7 @@ import pdfplumber
 from docx import Document
 import os
 
+
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(
     page_title="Contract Risk Analyzer",
@@ -12,45 +13,66 @@ st.set_page_config(
 
 st.title("📄 Contract Analysis & Risk Assessment Bot")
 
-# ---------------- LOAD GEMINI API KEY ----------------
-api_key = None
 
-# First try Streamlit secrets
-if "GEMINI_API_KEY" in st.secrets:
-    api_key = st.secrets["GEMINI_API_KEY"]
-else:
-    api_key = os.getenv("GEMINI_API_KEY")
+# ---------------- LOAD API KEY SAFELY ----------------
+def load_api_key():
+    """
+    Loads API key from Streamlit secrets first,
+    then environment variables.
+    """
+    api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 
-if not api_key:
-    st.error(
-        "❌ Gemini API key not found.\n\n"
-        "Add it to `.streamlit/secrets.toml` or set an environment variable."
-    )
-    st.stop()
+    if not api_key:
+        st.error(
+            "❌ Gemini API key not found.\n\n"
+            "Add it to `.streamlit/secrets.toml` OR Streamlit Cloud secrets."
+        )
+        st.stop()
 
+    return api_key
+
+
+api_key = load_api_key()
+
+# Configure Gemini
 genai.configure(api_key=api_key)
 
-# ---------------- AUTO-DETECT WORKING MODEL ----------------
-def get_working_model():
+
+# ---------------- CACHE MODEL (VERY IMPORTANT) ----------------
+@st.cache_resource
+def get_model():
+    """
+    Cache prevents model reload on every UI interaction.
+    Makes app MUCH faster.
+    """
     try:
         models = genai.list_models()
+
         for m in models:
             if "generateContent" in m.supported_generation_methods:
                 return genai.GenerativeModel(m.name)
+
     except Exception:
         return None
+
     return None
 
-model = get_working_model()
 
-# ---------------- FUNCTIONS ----------------
+model = get_model()
+
+
+# ---------------- FILE TEXT EXTRACTION ----------------
 def extract_text(file):
+
     if file.name.endswith(".pdf"):
         text = ""
+
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                if page.extract_text():
-                    text += page.extract_text() + "\n"
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+
         return text
 
     elif file.name.endswith(".docx"):
@@ -61,7 +83,9 @@ def extract_text(file):
         return file.read().decode("utf-8")
 
 
+# ---------------- RULE-BASED RISK ----------------
 def rule_based_risk(text):
+
     risks = []
     t = text.lower()
 
@@ -74,44 +98,43 @@ def rule_based_risk(text):
     if "jurisdiction" in t:
         risks.append("Foreign jurisdiction clause")
 
-    if len(risks) >= 2:
-        level = "High"
-    elif len(risks) == 1:
-        level = "Medium"
-    else:
-        level = "Low"
+    level = (
+        "High" if len(risks) >= 2
+        else "Medium" if len(risks) == 1
+        else "Low"
+    )
 
     return risks, level
 
 
+# ---------------- GEMINI ANALYSIS ----------------
 def analyze_with_gemini(text):
+
     if not model:
-        return (
-            "⚠️ AI analysis is unavailable for this API key.\n\n"
-            "Rule-based risk detection is shown above and is valid."
-        )
+        return "⚠️ AI analysis unavailable. Showing rule-based detection only."
 
     prompt = f"""
 You are a legal contract risk analysis assistant.
 
 Analyze the contract below and provide:
-1. Contract type
-2. Overall risk level (Low / Medium / High)
-3. Risky clauses
-4. Simple business explanation
-5. Safer recommendations
+
+1. Contract type  
+2. Overall risk level (Low / Medium / High)  
+3. Risky clauses  
+4. Simple business explanation  
+5. Safer recommendations  
 
 Contract:
 {text}
 """
+
     try:
         response = model.generate_content(prompt)
         return response.text
+
     except Exception:
-        return (
-            "⚠️ AI analysis temporarily unavailable.\n\n"
-            "Rule-based risk detection is still valid."
-        )
+        return "⚠️ AI analysis temporarily unavailable."
+
 
 # ---------------- UI ----------------
 uploaded_file = st.file_uploader(
@@ -120,6 +143,7 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file:
+
     contract_text = extract_text(uploaded_file)
 
     st.success("✅ Contract uploaded successfully")
@@ -131,6 +155,7 @@ if uploaded_file:
     st.write(f"**Overall Risk Level:** `{risk_level}`")
 
     st.subheader("⚠️ Detected Risky Clauses")
+
     if risks:
         for r in risks:
             st.write(f"• {r}")
@@ -138,6 +163,7 @@ if uploaded_file:
         st.write("No major risky clauses detected.")
 
     st.subheader("🤖 AI Explanation")
+
     with st.spinner("Analyzing contract..."):
         ai_result = analyze_with_gemini(contract_text)
         st.write(ai_result)
